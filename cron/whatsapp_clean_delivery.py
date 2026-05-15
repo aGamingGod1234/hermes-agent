@@ -10,11 +10,13 @@ cron engine and delivery routing.
 from __future__ import annotations
 
 from copy import deepcopy
+from threading import RLock
 from typing import Any, Callable
 
 
 _PATCH_FLAG = "_hermes_whatsapp_clean_cron_delivery_patched"
 _ORIGINAL_DELIVER_ATTR = "_hermes_whatsapp_clean_cron_delivery_original"
+_DELIVERY_PATCH_LOCK = RLock()
 
 
 def _is_whatsapp_target(target: dict[str, Any]) -> bool:
@@ -55,6 +57,21 @@ def _humanize_cron_failure(content: str) -> str:
     return content
 
 
+def _call_original_existing(
+    original_deliver: Callable[..., Any],
+    job: dict[str, Any],
+    content: str,
+    *,
+    adapters: Any = None,
+    loop: Any = None,
+) -> str | None:
+    # _call_original_clean temporarily overrides scheduler.load_config. Route all
+    # patched delivery calls through the same lock so parallel cron jobs cannot
+    # observe the temporary no-wrap config by accident.
+    with _DELIVERY_PATCH_LOCK:
+        return original_deliver(job, content, adapters=adapters, loop=loop)
+
+
 def _call_original_clean(
     scheduler_module: Any,
     original_deliver: Callable[..., Any],
@@ -91,18 +108,19 @@ def _call_original_clean(
         cfg["cron"] = cron_cfg
         return cfg
 
-    if callable(original_load_config):
-        setattr(scheduler_module, "load_config", clean_load_config)
-    try:
-        return original_deliver(
-            job,
-            _humanize_cron_failure(str(content or "")),
-            adapters=adapters,
-            loop=loop,
-        )
-    finally:
+    with _DELIVERY_PATCH_LOCK:
         if callable(original_load_config):
-            setattr(scheduler_module, "load_config", original_load_config)
+            setattr(scheduler_module, "load_config", clean_load_config)
+        try:
+            return original_deliver(
+                job,
+                _humanize_cron_failure(str(content or "")),
+                adapters=adapters,
+                loop=loop,
+            )
+        finally:
+            if callable(original_load_config):
+                setattr(scheduler_module, "load_config", original_load_config)
 
 
 def _deliver_result_clean_for_whatsapp(
@@ -117,11 +135,23 @@ def _deliver_result_clean_for_whatsapp(
     try:
         targets = list(scheduler_module._resolve_delivery_targets(job))
     except Exception:
-        return original_deliver(job, content, adapters=adapters, loop=loop)
+        return _call_original_existing(
+            original_deliver,
+            job,
+            content,
+            adapters=adapters,
+            loop=loop,
+        )
 
     whatsapp_targets = [target for target in targets if _is_whatsapp_target(target)]
     if not whatsapp_targets:
-        return original_deliver(job, content, adapters=adapters, loop=loop)
+        return _call_original_existing(
+            original_deliver,
+            job,
+            content,
+            adapters=adapters,
+            loop=loop,
+        )
 
     # Single-target WhatsApp is the common path: deliver the clean assistant
     # content exactly once, without the stock Cronjob Response header/footer.
@@ -150,7 +180,13 @@ def _deliver_result_clean_for_whatsapp(
                 loop=loop,
             )
         else:
-            error = original_deliver(target_job, content, adapters=adapters, loop=loop)
+            error = _call_original_existing(
+                original_deliver,
+                target_job,
+                content,
+                adapters=adapters,
+                loop=loop,
+            )
         if error:
             errors.append(str(error))
     return "; ".join(errors) if errors else None
