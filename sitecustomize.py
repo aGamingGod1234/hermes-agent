@@ -11,3 +11,11 @@ try:
 except Exception:
     # Startup customisations are optional; Hermes must boot even if this fails.
     pass
+
+try:
+    from cron.whatsapp_clean_delivery import install_whatsapp_clean_cron_delivery_patch
+
+    install_whatsapp_clean_cron_delivery_patch()
+except Exception:
+    # Cron delivery cleanup is optional; Hermes must boot even if this fails.
+    pass
