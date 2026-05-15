@@ -94,7 +94,10 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
 
     # Tier 3 — no edit support, progress messages are permanent
     "signal":          _TIER_LOW,
-    "whatsapp":        _TIER_MEDIUM,  # Baileys bridge supports /edit
+    # WhatsApp is the operator-facing mobile channel and the Baileys bridge
+    # supports /edit. Show full tool/delegate progress by default so long work
+    # does not look frozen behind terse cron/status bubbles.
+    "whatsapp":        {**_TIER_MEDIUM, "tool_progress": "verbose", "tool_preview_length": 0},
     "bluebubbles":     _TIER_LOW,
     "weixin":          _TIER_LOW,
     "wecom":           _TIER_LOW,
